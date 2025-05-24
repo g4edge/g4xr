@@ -20,12 +20,14 @@ void G4XrViewer::Initialise()
 {
   std::cout << "G4XrViewer::Initialise()" << std::endl;
 
-  httplib::Server svr;
   svr.Get("/hi", [](const httplib::Request &, httplib::Response &res) {
     res.set_content("Hello World!", "text/plain");
   });
 
-  svr.listen("0.0.0.0", 8080);
+
+  svr_thread = std::thread([this]() {
+    this->svr.listen("0.0.0.0", 8080);  // This blocks inside the thread
+  });
 }
 
 G4XrViewer::~G4XrViewer()
