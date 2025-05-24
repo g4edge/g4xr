@@ -53,6 +53,8 @@ class G4XrViewer : public G4VViewer
     void FinishView() override;
 
   protected:
+    httplib::Server svr;
+    std::thread svr_thread;
 };
 
 #endif
