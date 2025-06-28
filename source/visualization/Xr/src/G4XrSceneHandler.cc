@@ -49,6 +49,23 @@
 #include "G4VNestedParameterisation.hh"
 #include "G4VPhysicalVolume.hh"
 
+//BEN:
+
+#define TINYGLTF_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "tiny_gltf.h"
+
+// for track recording:
+
+#include "G4AttHolder.hh"
+#include "G4TrajectoriesModel.hh"
+#include "G4HitsModel.hh"
+#include "G4VTrajectory.hh"
+#include "G4VTrajectoryPoint.hh"
+#include "G4VHit.hh"
+#include "G4VisAttributes.hh"
+
 // Counter for Xr scene handlers.
 G4int G4XrSceneHandler::fSceneIdCount = 0;
 
@@ -58,28 +75,446 @@ G4XrSceneHandler::G4XrSceneHandler(G4VGraphicsSystem& system, const G4String& na
 
 void G4XrSceneHandler::AddPrimitive(const G4Polyline& polyline)
 {
-  std::cout << "G4XrSceneHandler::AddPrimitive(G4Polyline=" << &polyline << ")" << std::endl;
+    //std::cout << "MODDED: G4XrSceneHandler::AddPrimitive(G4Polyline=" << &polyline << ")" << std::endl;
+
+    G4AttHolder holder;
+
+    if (const G4TrajectoriesModel* trajModel = dynamic_cast<G4TrajectoriesModel*>(fpModel))
+    {
+        const G4VTrajectory* traj = trajModel->GetCurrentTrajectory();
+        if(traj)
+            CollectTrackData(traj);
+
+    }
+    //else {std::cout<<"Skipping this one..."<<std::endl;}
+
 }
+
 
 void G4XrSceneHandler::AddPrimitive(const G4Text& text)
 {
-  std::cout << "G4XrSceneHandler::AddPrimitive(G4Text=" << &text << ")" << std::endl;
+  //std::cout << "G4XrSceneHandler::AddPrimitive(G4Text=" << &text << ")" << std::endl;
 }
 
 
 void G4XrSceneHandler::AddPrimitive(const G4Circle& circle)
 {
-  std::cout << "G4XrSceneHandler::AddPrimitive(G4Circle=" << &circle << ")" << std::endl;
+  //std::cout << "G4XrSceneHandler::AddPrimitive(G4Circle=" << &circle << ")" << std::endl;
+    if (const G4HitsModel* hitsModel = dynamic_cast<G4HitsModel*>(fpModel))
+    {
+        const G4VHit* hit = hitsModel->GetCurrentHit();
+        if (hit)
+            CollectHitData(hit);
+        else
+            std::cout<<"Skipping this hitsModel..."<<std::endl;
+    }
 }
 
 void G4XrSceneHandler::AddPrimitive(const G4Square& square)
 {
-  std::cout << "G4XrSceneHandler::AddPrimitive(G4Square=" << &square << ")" << std::endl;
+  //std::cout << "G4XrSceneHandler::AddPrimitive(G4Square=" << &square << ")" << std::endl;
+    if (const G4HitsModel* hitsModel = dynamic_cast<G4HitsModel*>(fpModel))
+    {
+        const G4VHit* hit = hitsModel->GetCurrentHit();
+        if (hit)
+            CollectHitData(hit);
+        else
+            std::cout<<"Skipping this hitsModel..."<<std::endl;
+    }
 }
 
 void G4XrSceneHandler::AddPrimitive(const G4Polyhedron& polyhedron)
 {
-  std::cout << "G4XrSceneHandler::AddPrimitive(G4Polyhedron=" << &polyhedron << ")" << std::endl;
+  //std::cout << "MODDED G4XrSceneHandler::AddPrimitive(G4Polyhedron=" << &polyhedron << ")" << std::endl;
+    MeshData mesh;
+    auto pPVModel = dynamic_cast<G4PhysicalVolumeModel*>(fpModel);
+
+    G4String parameterisationName;
+    mesh.name = "NOTPHYSVOL"; // this is technically meaningless but serves as a useful check in case an object that is not a physvol is somehow in the final GLB - BEN.
+    if (pPVModel) {
+        
+        // model naming
+        parameterisationName  = pPVModel->GetFullPVPath().back().GetPhysicalVolume()->GetName();
+        mesh.name = parameterisationName;
+        //G4cout<<mesh.name<<G4endl;
+        
+        // model colo(u)ring
+        
+        auto currentLV = dynamic_cast<G4PhysicalVolumeModel*>(fpModel)->GetCurrentLV();
+        if (currentLV)
+        {
+            const G4VisAttributes* visAttr = currentLV->GetVisAttributes();
+            if (visAttr)
+                mesh.lvColour = visAttr->GetColour();
+            else
+                mesh.lvColour = G4Colour(0.5, 0.5, 0.5, 0.1);
+        }
+        else
+        {
+            mesh.lvColour = G4Colour(0.5, 0.5, 0.5, 0.1);
+        }
+        
+        // fill in MeshData type with transform data from the G4Scene.
+
+        mesh.transform = fObjectTransformation;
+                
+        int vertexno = polyhedron.GetNoVertices();
+        mesh.positions.reserve(vertexno);
+        for (int i = 1; i <= vertexno; ++i) {
+            G4Point3D v = polyhedron.GetVertex(i);
+            G4ThreeVector worldV = fObjectTransformation * v;
+            mesh.positions.push_back(worldV);
+        }
+        
+        int numFacets = polyhedron.GetNoFacets();
+        for (int i = 1; i <= numFacets; i++) {
+            G4int nEdges = 0;
+            G4int nodeIndices[4];
+            
+            polyhedron.GetFacet(i, nEdges, nodeIndices);
+            
+            if (nEdges == 3) {
+                mesh.indices.push_back(nodeIndices[0] - 1);
+                mesh.indices.push_back(nodeIndices[1] - 1);
+                mesh.indices.push_back(nodeIndices[2] - 1);
+            } else if (nEdges == 4) {
+                mesh.indices.push_back(nodeIndices[0] - 1);
+                mesh.indices.push_back(nodeIndices[1] - 1);
+                mesh.indices.push_back(nodeIndices[2] - 1);
+                
+                mesh.indices.push_back(nodeIndices[0] - 1);
+                mesh.indices.push_back(nodeIndices[2] - 1);
+                mesh.indices.push_back(nodeIndices[3] - 1);
+            }
+            else {std::cout<<"WARNING. A facet has neither 3 nor 4 edges"<<std::endl;}
+        }
+        
+        collectedMeshes.push_back(std::move(mesh));
+    } else {
+        std::cout<<"Skipping non-PV"<<std::endl;
+    }
+    
+}
+
+
+// BEN - 01/06/2025
+
+using namespace tinygltf;
+
+auto alignTo4 = [](size_t offset) {return (offset + 3) & ~3;};
+
+void G4XrSceneHandler::EndModeling()
+{
+    std::cout<<"========= END MODELING ========="<<std::endl;
+    fs::path gltf_dir = fs::current_path() / "GLTF";
+    if (!fs::exists(gltf_dir)) {fs::create_directory(gltf_dir);}
+
+    fs::path output_path = gltf_dir / "trial.glb";
+    ConvertMeshToGLB(collectedMeshes, output_path.string());
+    
+    /*std::cout<<"Writing to JSON..."<<std::endl;
+    
+    std::ofstream file((gltf_dir / "trial_tracks.json").string());
+    
+    //file.open();
+    
+    WriteToJSON((gltf_dir / "trial_tracks.json").string());
+    
+    file.close();*/
+
+}
+
+
+void G4XrSceneHandler::ConvertMeshToGLB(const std::vector<MeshData>& meshList, const std::string& outputFile) {
+    tinygltf::Model model;
+    tinygltf::Scene scene;
+    scene.name = "G4Scene"; // maybe call it "G4_PROJECTNAME_RUNNO" instead?
+
+    for (size_t meshIndex = 0; meshIndex < meshList.size(); ++meshIndex)
+    {
+        const MeshData& mesh = meshList[meshIndex];
+        std::vector<float> vertices;
+        for ( auto& v : mesh.positions)
+        {
+            vertices.push_back(static_cast<float>(v.x()));
+            vertices.push_back(static_cast<float>(v.y()));
+            vertices.push_back(static_cast<float>(v.z()));
+        }
+
+        std::vector<uint16_t> indices(mesh.indices.begin(), mesh.indices.end());
+
+
+        tinygltf::Buffer buffer;
+
+        int vertexBufferByteLength = vertices.size() * sizeof(float);
+        buffer.data.insert(buffer.data.end(),
+            reinterpret_cast<const unsigned char*>(vertices.data()),
+            reinterpret_cast<const unsigned char*>(vertices.data() + vertices.size()));
+
+        int alignedVertexByteLength = alignTo4(vertexBufferByteLength);
+        buffer.data.insert(buffer.data.end(), alignedVertexByteLength - vertexBufferByteLength, 0);
+
+        int indexBufferByteOffset = alignedVertexByteLength;
+        int indexBufferByteLength = indices.size() * sizeof(uint16_t);
+        buffer.data.insert(buffer.data.end(),
+            reinterpret_cast<const unsigned char*>(indices.data()),
+            reinterpret_cast<const unsigned char*>(indices.data() + indices.size()));
+
+        int bufferIndex = model.buffers.size();
+        model.buffers.push_back(buffer);
+
+        // position bufferViews
+        tinygltf::BufferView positionBufferView;
+        positionBufferView.buffer = bufferIndex;
+        positionBufferView.byteOffset = 0;
+        positionBufferView.byteLength = vertexBufferByteLength;
+        positionBufferView.target = TINYGLTF_TARGET_ARRAY_BUFFER;
+
+        int positionBufferViewIndex = model.bufferViews.size();
+        model.bufferViews.push_back(positionBufferView);
+
+        // index bufferViews
+        tinygltf::BufferView indexBufferView;
+        indexBufferView.buffer = bufferIndex;
+        indexBufferView.byteOffset = indexBufferByteOffset;
+        indexBufferView.byteLength = indexBufferByteLength;
+        indexBufferView.target = TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER;
+
+        int indexBufferViewIndex = model.bufferViews.size();
+        model.bufferViews.push_back(indexBufferView);
+
+        // position accessors
+        tinygltf::Accessor positionAccessor;
+        positionAccessor.bufferView = positionBufferViewIndex;
+        positionAccessor.byteOffset = 0;
+        positionAccessor.componentType = TINYGLTF_COMPONENT_TYPE_FLOAT;
+        positionAccessor.count = vertices.size() / 3;
+        positionAccessor.type = TINYGLTF_TYPE_VEC3;
+
+        float minX = std::numeric_limits<float>::max();
+        float minY = std::numeric_limits<float>::max();
+        float minZ = std::numeric_limits<float>::max();
+        float maxX = std::numeric_limits<float>::lowest();
+        float maxY = std::numeric_limits<float>::lowest();
+        float maxZ = std::numeric_limits<float>::lowest();
+
+        for (size_t i = 0; i < vertices.size(); i += 3)
+        {
+            float x = vertices[i];
+            float y = vertices[i + 1];
+            float z = vertices[i + 2];
+            minX = std::min(minX, x);
+            minY = std::min(minY, y);
+            minZ = std::min(minZ, z);
+            maxX = std::max(maxX, x);
+            maxY = std::max(maxY, y);
+            maxZ = std::max(maxZ, z);
+        }
+
+        positionAccessor.minValues = { minX, minY, minZ };
+        positionAccessor.maxValues = { maxX, maxY, maxZ };
+
+        model.accessors.push_back(positionAccessor);
+
+        // index accessors
+        tinygltf::Accessor indexAccessor;
+        indexAccessor.bufferView = model.bufferViews.size() - 1;
+        indexAccessor.byteOffset = 0;
+        indexAccessor.componentType = TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT;
+        indexAccessor.count = indices.size();
+        indexAccessor.type = TINYGLTF_TYPE_SCALAR;
+        model.accessors.push_back(indexAccessor);
+        
+        // material matching
+        tinygltf::Material material;
+        material.name = mesh.name + "_mat";
+        material.pbrMetallicRoughness.baseColorFactor = {mesh.lvColour.GetRed(), mesh.lvColour.GetGreen(), mesh.lvColour.GetBlue(), 0.1f}; // alpha specified here so G4VR doesn't have to manipulate the geometries further - BEN
+        material.alphaMode = "BLEND"; // to impose opacity.
+        material.pbrMetallicRoughness.metallicFactor = 0.0;
+        material.pbrMetallicRoughness.roughnessFactor = 0.0; // these are defaults - no physical meaning.
+        material.emissiveFactor = {mesh.lvColour.GetRed(), mesh.lvColour.GetGreen(), mesh.lvColour.GetBlue()};
+        
+        int materialIndex = model.materials.size();
+        model.materials.push_back(material);
+
+        tinygltf::Primitive primitive;
+        primitive.attributes["POSITION"] = model.accessors.size() - 2;
+        primitive.indices = model.accessors.size() - 1;
+        primitive.material = materialIndex;
+        primitive.mode = TINYGLTF_MODE_TRIANGLES;
+
+        tinygltf::Mesh gltfMesh;
+        //gltfMesh.name = "geo_" + std::to_string(meshIndex);
+        gltfMesh.name = mesh.name;
+        gltfMesh.primitives.push_back(primitive);
+        model.meshes.push_back(gltfMesh);
+
+        tinygltf::Node node;
+        node.mesh = model.meshes.size() - 1;
+        model.nodes.push_back(node);
+        scene.nodes.push_back(model.nodes.size() - 1);
+    }
+
+    model.scenes.push_back(scene);
+    model.defaultScene = 0;
+
+    tinygltf::TinyGLTF gltf;
+    std::string err, warn;
+
+    //bool write_status = gltf.WriteGltfSceneToFile(&model, outputFile, true, true, true, true); // this writes a GLTF, which we don't want at the moment.
+    bool write_status = gltf.WriteGltfSceneToFile(&model, outputFile, true, true, false, true); // glb file writing
+
+}
+
+
+void G4XrSceneHandler::CollectTrackData(const G4VTrajectory* traj)
+{
+    //std::cout << "------ TRAJECTORY ------" << std::endl;
+
+    G4String trackID = std::to_string(traj->GetTrackID());
+    G4String particleName = traj->GetParticleName();
+    G4double charge = traj->GetCharge();
+
+    G4int points = traj->GetPointEntries();
+    for (G4int i = 0; i < points; ++i)
+    {
+        const G4VTrajectoryPoint* point = traj->GetPoint(i);
+        if (!point) continue;
+
+        const G4ThreeVector& pos = point->GetPosition();
+
+        TrackData td;
+        td.trackID = trackID;
+        td.particleName = particleName;
+        td.step = std::to_string(i);
+        td.x = std::to_string(pos.x());
+        td.y = std::to_string(pos.y());
+        td.z = std::to_string(pos.z());
+        td.charge = charge;
+        
+        collectedTracks.push_back(td);
+        WriteToCSV((fs::current_path() / "GLTF" / "trial_tracks.csv").string(), td);
+    }
+
+    //std::cout << "--------------------------" << std::endl;
+}
+
+
+void G4XrSceneHandler::CollectHitData(const G4VHit* hit)
+{
+    //std::cout << "------ HIT ------" << std::endl;
+
+    auto attDefs = hit->GetAttDefs();
+    auto attVals = hit->CreateAttValues();
+
+    HitData hd;
+
+    if (attDefs && attVals)
+    {
+        for (size_t i = 0; i < attVals->size(); ++i)
+        {
+            const G4AttValue& attVal = attVals->at(i);
+            const G4String& name = attVal.GetName();
+            const G4String& value = attVal.GetValue();
+
+            //std::cout << name << ": " << value << std::endl;
+            if (name == "Pos") {
+                std::istringstream iss(value);
+                G4double x, y, z;
+                iss >> x >> y >> z;
+                hd.x = std::to_string(x);
+                hd.y = std::to_string(y);
+                hd.z = std::to_string(z);
+            }
+            if (name == "Edep") {
+                hd.edep = value;
+            }
+        }
+        if (!hd.x.empty() && !hd.y.empty() && !hd.z.empty())
+        {
+            collectedHits.push_back(hd);
+            WriteToCSV((fs::current_path() / "GLTF" / "trial_tracks.csv").string(), hd);
+        }
+    }
+    else
+        std::cout << "No attribute definitions or values found." << std::endl;
+
+    //std::cout << "--------------------------" << std::endl;
+}
+
+
+void G4XrSceneHandler::WriteToJSON(const std::string& filename) // a nicer way to store data - would work if there was a way to call this at the end of all AddPrimitive calls for a run. - BEN 19/06/2025
+{
+    std::ofstream file(filename);
+    if (!file.is_open()) return;
+    
+    file << "{\n";
+    
+    // tracks
+    
+    std::cout<<"Writing "<<collectedTracks.size()<<" tracks"<<std::endl;
+    file << "  \"tracks\": [\n";
+    
+    std::map<std::string, std::vector<TrackData>> trackGroups;
+    for (const auto& t : collectedTracks) {
+        std::string key = t.trackID + "|" + t.particleName;
+        trackGroups[key].push_back(t);
+    }
+    
+    size_t trackCount = 0;
+    for (const auto& [key, steps] : trackGroups) {
+        const std::string& trackID = steps.front().trackID;
+        const std::string& particleName = steps.front().particleName;
+        
+        file << "    {\n";
+        file << "      \"trackID\": \"" << trackID << "\",\n";
+        file << "      \"particleName\": \"" << particleName << "\",\n";
+        file << "      \"points\": [\n";
+        
+        for (size_t i = 0; i < steps.size(); ++i) {
+            const auto& step = steps[i];
+            file << "        { \"step\": \"" << step.step << "\", \"x\": \"" << step.x << "\", \"y\": \"" << step.y << "\", \"z\": \"" << step.z << "\" }";
+            if (i < steps.size() - 1) file << ",";
+            file << "\n";
+        }
+        file << "      ]\n";
+        file << "    }";
+        if (++trackCount < trackGroups.size()) file << ",";
+        file << "\n";
+    }
+    
+    file << "  ],\n";
+    
+    // hits
+    std::cout<<"Writing "<<collectedHits.size()<<" hits"<<std::endl;
+
+    file << "  \"hits\": [\n";
+    
+    for (size_t i = 0; i < collectedHits.size(); ++i) {
+        const auto& hit = collectedHits[i];
+        file << "    { \"x\": \"" << hit.x << "\", \"y\": \"" << hit.y
+        << "\", \"z\": \"" << hit.z << "\", \"edep\": \"" << hit.edep << "\" }";
+        if (i < collectedHits.size() - 1) file << ",";
+        file << "\n";
+    }
+    
+    file << "  ]\n";
+    
+    file << "}\n";
+}
+
+void G4XrSceneHandler::WriteToCSV(const std::string& filename, const TrackData td) // called with every traj entry
+{
+    std::ofstream file(filename,std::ios::app);
+    file << "track,"<< td.trackID << ","<< td.particleName << "," << td.charge << ","<< td.step << ","<< td.x << ","<< td.y << ","<< td.z << "\n";
+    file.close();
+}
+
+void G4XrSceneHandler::WriteToCSV(const std::string& filename, const HitData hd) // called with every hit entry
+{
+    std::ofstream file(filename,std::ios::app);
+    file << "hit,"<< hd.x << ","<< hd.y << ","<< hd.z << "," << hd.edep << "\n";
+    file.close();
 }
 
 

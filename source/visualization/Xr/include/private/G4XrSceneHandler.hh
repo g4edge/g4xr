@@ -36,14 +36,42 @@
 #include "G4VSceneHandler.hh"
 #include "G4XrViewer.hh"
 
+#include "G4Polyhedron.hh"
+#include "G4Transform3D.hh"
+#include "G4ThreeVector.hh"
+
 #include <map>
 #include <vector>
+
+struct MeshData {
+    std::string name;
+    std::vector<G4ThreeVector> positions;
+    std::vector<unsigned int> indices;
+    G4Transform3D transform;
+    G4Colour lvColour;
+};
+
+struct TrackData {
+    //std::map<std::string, std::string> atts;
+    //std::string objID;
+    //std::string sourceType;
+    std::string trackID;
+    std::string particleName;
+    std::string step;
+    std::string x,y,z;
+    double charge;
+};
+
+struct HitData {
+    std::string x,y,z;
+    std::string edep = "0.0"; // haven't figured out a way to get this info yet... - BEN, 19/06/2025
+};
 
 class G4XrSceneHandler : public G4VSceneHandler
 {
   public:
     G4XrSceneHandler(G4VGraphicsSystem& system, const G4String& name);
-    ~G4XrSceneHandler() override = default;
+    virtual ~G4XrSceneHandler() override = default; // BEN - MARKED VIRTUAL
 
     ////////////////////////////////////////////////////////////////
     // Required implementation of pure virtual functions...
@@ -54,12 +82,31 @@ class G4XrSceneHandler : public G4VSceneHandler
     void AddPrimitive(const G4Circle&) override;
     void AddPrimitive(const G4Square&) override;
     void AddPrimitive(const G4Polyhedron&) override;
+    
+    //BEN
+    void CollectTrackData(const G4VTrajectory* traj);
+    void CollectHitData(const G4VHit* hit);
+    void EndModeling() override;
+    
+    void ConvertMeshToGLB(const std::vector<MeshData>& meshList, const std::string& outputFile);
+    void WriteToJSON(const std::string& filename);
+    void WriteToCSV(const std::string& filename, const TrackData td);
+    void WriteToCSV(const std::string& filename, const HitData hd);
+    
+    std::vector<MeshData> GetCollectedMeshes(){return collectedMeshes;}
+    std::vector<TrackData> GetCollectedTracks(){return collectedTracks;}
+    
+    
 
   protected:
     static G4int fSceneIdCount;  // Counter for Vtk scene handlers.
 
   private:
     friend class G4XrViewer;
+    std::vector<MeshData> collectedMeshes; // BEN
+    std::vector<TrackData> collectedTracks; // BEN
+    std::vector<HitData> collectedHits; // BEN
+
 };
 
 #endif
