@@ -49,7 +49,7 @@
 #include "G4VNestedParameterisation.hh"
 #include "G4VPhysicalVolume.hh"
 
-//BEN:
+
 
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
@@ -63,74 +63,86 @@
 #include "G4HitsModel.hh"
 #include "G4VTrajectory.hh"
 #include "G4VTrajectoryPoint.hh"
+#include "G4RichTrajectory.hh"
+#include "G4RichTrajectoryPoint.hh"
 #include "G4VHit.hh"
 #include "G4VisAttributes.hh"
+
+using namespace tinygltf;
+
 
 // Counter for Xr scene handlers.
 G4int G4XrSceneHandler::fSceneIdCount = 0;
 
 G4XrSceneHandler::G4XrSceneHandler(G4VGraphicsSystem& system, const G4String& name)
   : G4VSceneHandler(system, fSceneIdCount++, name)
-{}
+{
+    // Added this to force rich trajectories
+    G4UImanager::GetUIpointer()->ApplyCommand("/vis/scene/add/trajectories rich");
+}
+
+G4XrSceneHandler::~G4XrSceneHandler()
+{
+    fs::path gltf = fs::current_path() / "GLTF";
+    fs::path uploads = fs::current_path() / "uploads";
+    fs::remove_all(gltf);
+    fs::remove_all(uploads);
+    std::cout << "G4Xr contents deleted." << std::endl;
+}
 
 void G4XrSceneHandler::AddPrimitive(const G4Polyline& polyline)
 {
-    //std::cout << "MODDED: G4XrSceneHandler::AddPrimitive(G4Polyline=" << &polyline << ")" << std::endl;
-
     G4AttHolder holder;
-
     if (const G4TrajectoriesModel* trajModel = dynamic_cast<G4TrajectoriesModel*>(fpModel))
     {
+        if (trajModel->GetRunID() != runno) {runno = trajModel->GetRunID();loggedIDs.clear();} //loggedIDs is cleared as soon as a trajectory with a new run no. is seen.
         const G4VTrajectory* traj = trajModel->GetCurrentTrajectory();
         if(traj)
-            CollectTrackData(traj);
-
+        {
+            int trackID = traj->GetTrackID();
+            if(loggedIDs.find(trackID)==loggedIDs.end()) // prevents logging a particular trajectory more than once
+            {
+                loggedIDs.insert(trackID);
+                CollectTrackData(traj);
+            }
+        }
     }
-    //else {std::cout<<"Skipping this one..."<<std::endl;}
-
 }
 
 
 void G4XrSceneHandler::AddPrimitive(const G4Text& text)
 {
-  //std::cout << "G4XrSceneHandler::AddPrimitive(G4Text=" << &text << ")" << std::endl;
 }
 
 
 void G4XrSceneHandler::AddPrimitive(const G4Circle& circle)
 {
-  //std::cout << "G4XrSceneHandler::AddPrimitive(G4Circle=" << &circle << ")" << std::endl;
     if (const G4HitsModel* hitsModel = dynamic_cast<G4HitsModel*>(fpModel))
     {
         const G4VHit* hit = hitsModel->GetCurrentHit();
         if (hit)
             CollectHitData(hit);
-        else
-            std::cout<<"Skipping this hitsModel..."<<std::endl;
+
     }
 }
 
 void G4XrSceneHandler::AddPrimitive(const G4Square& square)
 {
-  //std::cout << "G4XrSceneHandler::AddPrimitive(G4Square=" << &square << ")" << std::endl;
     if (const G4HitsModel* hitsModel = dynamic_cast<G4HitsModel*>(fpModel))
     {
         const G4VHit* hit = hitsModel->GetCurrentHit();
         if (hit)
             CollectHitData(hit);
-        else
-            std::cout<<"Skipping this hitsModel..."<<std::endl;
     }
 }
 
 void G4XrSceneHandler::AddPrimitive(const G4Polyhedron& polyhedron)
 {
-  //std::cout << "MODDED G4XrSceneHandler::AddPrimitive(G4Polyhedron=" << &polyhedron << ")" << std::endl;
     MeshData mesh;
     auto pPVModel = dynamic_cast<G4PhysicalVolumeModel*>(fpModel);
 
     G4String parameterisationName;
-    mesh.name = "NOTPHYSVOL"; // this is technically meaningless but serves as a useful check in case an object that is not a physvol is somehow in the final GLB - BEN.
+    mesh.name = "NOTPHYSVOL";
     if (pPVModel) {
         
         // model naming
@@ -190,45 +202,29 @@ void G4XrSceneHandler::AddPrimitive(const G4Polyhedron& polyhedron)
         }
         
         collectedMeshes.push_back(std::move(mesh));
-    } else {
-        std::cout<<"Skipping non-PV"<<std::endl;
     }
     
 }
-
-
-// BEN - 01/06/2025
-
-using namespace tinygltf;
 
 auto alignTo4 = [](size_t offset) {return (offset + 3) & ~3;};
 
 void G4XrSceneHandler::EndModeling()
 {
-    std::cout<<"========= END MODELING ========="<<std::endl;
     fs::path gltf_dir = fs::current_path() / "GLTF";
     if (!fs::exists(gltf_dir)) {fs::create_directory(gltf_dir);}
 
-    fs::path output_path = gltf_dir / "trial.glb";
-    ConvertMeshToGLB(collectedMeshes, output_path.string());
-    
-    /*std::cout<<"Writing to JSON..."<<std::endl;
-    
-    std::ofstream file((gltf_dir / "trial_tracks.json").string());
-    
-    //file.open();
-    
-    WriteToJSON((gltf_dir / "trial_tracks.json").string());
-    
-    file.close();*/
-
+    if (!glbState)
+    {
+        fs::path output_path = gltf_dir / "trial.glb";
+        ConvertMeshToGLB(collectedMeshes, output_path.string());
+    }
 }
 
-
-void G4XrSceneHandler::ConvertMeshToGLB(const std::vector<MeshData>& meshList, const std::string& outputFile) {
+void G4XrSceneHandler::ConvertMeshToGLB(const std::vector<MeshData>& meshList, const std::string& outputFile)
+{
     tinygltf::Model model;
     tinygltf::Scene scene;
-    scene.name = "G4Scene"; // maybe call it "G4_PROJECTNAME_RUNNO" instead?
+    scene.name = "G4Scene";
 
     for (size_t meshIndex = 0; meshIndex < meshList.size(); ++meshIndex)
     {
@@ -344,7 +340,6 @@ void G4XrSceneHandler::ConvertMeshToGLB(const std::vector<MeshData>& meshList, c
         primitive.mode = TINYGLTF_MODE_TRIANGLES;
 
         tinygltf::Mesh gltfMesh;
-        //gltfMesh.name = "geo_" + std::to_string(meshIndex);
         gltfMesh.name = mesh.name;
         gltfMesh.primitives.push_back(primitive);
         model.meshes.push_back(gltfMesh);
@@ -361,19 +356,20 @@ void G4XrSceneHandler::ConvertMeshToGLB(const std::vector<MeshData>& meshList, c
     tinygltf::TinyGLTF gltf;
     std::string err, warn;
 
-    //bool write_status = gltf.WriteGltfSceneToFile(&model, outputFile, true, true, true, true); // this writes a GLTF, which we don't want at the moment.
     bool write_status = gltf.WriteGltfSceneToFile(&model, outputFile, true, true, false, true); // glb file writing
+    
+    if(write_status) glbState = true;
 
 }
 
 
 void G4XrSceneHandler::CollectTrackData(const G4VTrajectory* traj)
 {
-    //std::cout << "------ TRAJECTORY ------" << std::endl;
-
     G4String trackID = std::to_string(traj->GetTrackID());
     G4String particleName = traj->GetParticleName();
     G4double charge = traj->GetCharge();
+    
+    const G4RichTrajectory* rich_traj = dynamic_cast<const G4RichTrajectory*>(traj);
 
     G4int points = traj->GetPointEntries();
     for (G4int i = 0; i < points; ++i)
@@ -382,28 +378,44 @@ void G4XrSceneHandler::CollectTrackData(const G4VTrajectory* traj)
         if (!point) continue;
 
         const G4ThreeVector& pos = point->GetPosition();
-
+        
         TrackData td;
         td.trackID = trackID;
         td.particleName = particleName;
         td.step = std::to_string(i);
-        td.x = std::to_string(pos.x());
-        td.y = std::to_string(pos.y());
-        td.z = std::to_string(pos.z());
+        td.x = std::to_string(pos.x()); td.y = std::to_string(pos.y());td.z = std::to_string(pos.z());
         td.charge = charge;
+        std::vector<G4AttValue>* attValues = point->CreateAttValues();
         
-        collectedTracks.push_back(td);
-        WriteToCSV((fs::current_path() / "GLTF" / "trial_tracks.csv").string(), td);
-    }
+        if (rich_traj)
+        {
+            const G4ThreeVector initMom = rich_traj->GetInitialMomentum(); // from rich
+            td.px = std::to_string(initMom.x()); td.py = std::to_string(initMom.y());td.pz = std::to_string(initMom.z()); // from rich
+        }
 
-    //std::cout << "--------------------------" << std::endl;
+        if (attValues)
+        {
+            for (const auto& att : *attValues)
+            {
+                if (att.GetName() == "PostT") {
+                    td.time = att.GetValue();
+                } else if (att.GetName() == "TED") { // total energy deposit
+                    td.edep = att.GetValue();
+                } else if (att.GetName() == "PDS") { // process defined step
+                    td.process = att.GetValue();
+                }
+            }
+            
+            delete attValues;
+        }
+        collectedTracks.push_back(td);
+        WriteToCSV((fs::current_path() / "GLTF" / ("run" + std::to_string(runno) + ".csv")).string(), td);
+    }
 }
 
 
 void G4XrSceneHandler::CollectHitData(const G4VHit* hit)
 {
-    //std::cout << "------ HIT ------" << std::endl;
-
     auto attDefs = hit->GetAttDefs();
     auto attVals = hit->CreateAttValues();
 
@@ -416,8 +428,6 @@ void G4XrSceneHandler::CollectHitData(const G4VHit* hit)
             const G4AttValue& attVal = attVals->at(i);
             const G4String& name = attVal.GetName();
             const G4String& value = attVal.GetValue();
-
-            //std::cout << name << ": " << value << std::endl;
             if (name == "Pos") {
                 std::istringstream iss(value);
                 G4double x, y, z;
@@ -433,80 +443,18 @@ void G4XrSceneHandler::CollectHitData(const G4VHit* hit)
         if (!hd.x.empty() && !hd.y.empty() && !hd.z.empty())
         {
             collectedHits.push_back(hd);
-            WriteToCSV((fs::current_path() / "GLTF" / "trial_tracks.csv").string(), hd);
+            WriteToCSV((fs::current_path() / "GLTF" / ("run" + std::to_string(runno) + ".csv")).string(), hd);
         }
     }
-    else
-        std::cout << "No attribute definitions or values found." << std::endl;
-
-    //std::cout << "--------------------------" << std::endl;
 }
 
-
-void G4XrSceneHandler::WriteToJSON(const std::string& filename) // a nicer way to store data - would work if there was a way to call this at the end of all AddPrimitive calls for a run. - BEN 19/06/2025
-{
-    std::ofstream file(filename);
-    if (!file.is_open()) return;
-    
-    file << "{\n";
-    
-    // tracks
-    
-    std::cout<<"Writing "<<collectedTracks.size()<<" tracks"<<std::endl;
-    file << "  \"tracks\": [\n";
-    
-    std::map<std::string, std::vector<TrackData>> trackGroups;
-    for (const auto& t : collectedTracks) {
-        std::string key = t.trackID + "|" + t.particleName;
-        trackGroups[key].push_back(t);
-    }
-    
-    size_t trackCount = 0;
-    for (const auto& [key, steps] : trackGroups) {
-        const std::string& trackID = steps.front().trackID;
-        const std::string& particleName = steps.front().particleName;
-        
-        file << "    {\n";
-        file << "      \"trackID\": \"" << trackID << "\",\n";
-        file << "      \"particleName\": \"" << particleName << "\",\n";
-        file << "      \"points\": [\n";
-        
-        for (size_t i = 0; i < steps.size(); ++i) {
-            const auto& step = steps[i];
-            file << "        { \"step\": \"" << step.step << "\", \"x\": \"" << step.x << "\", \"y\": \"" << step.y << "\", \"z\": \"" << step.z << "\" }";
-            if (i < steps.size() - 1) file << ",";
-            file << "\n";
-        }
-        file << "      ]\n";
-        file << "    }";
-        if (++trackCount < trackGroups.size()) file << ",";
-        file << "\n";
-    }
-    
-    file << "  ],\n";
-    
-    // hits
-    std::cout<<"Writing "<<collectedHits.size()<<" hits"<<std::endl;
-
-    file << "  \"hits\": [\n";
-    
-    for (size_t i = 0; i < collectedHits.size(); ++i) {
-        const auto& hit = collectedHits[i];
-        file << "    { \"x\": \"" << hit.x << "\", \"y\": \"" << hit.y
-        << "\", \"z\": \"" << hit.z << "\", \"edep\": \"" << hit.edep << "\" }";
-        if (i < collectedHits.size() - 1) file << ",";
-        file << "\n";
-    }
-    
-    file << "  ]\n";
-    
-    file << "}\n";
-}
 
 void G4XrSceneHandler::WriteToCSV(const std::string& filename, const TrackData td) // called with every traj entry
 {
     std::ofstream file(filename,std::ios::app);
-    file << "track,"<< td.trackID << ","<< td.particleName << "," << td.charge << ","<< td.step << ","<< td.x << ","<< td.y << ","<< td.z << "\n";
+    file << "track,"<< td.trackID << ","<< td.particleName << "," << td.charge << ","<< td.step << ","<< td.x << ","<< td.y << ","<< td.z << ","<< td.time << ","<< td.edep<< "," << td.process << "," << td.px << ","<< td.py<< "," << td.pz << "\n";
+    
+    // the order is track, ID, pName, charge, step, x,y,z, time, edep, process, px, py, pz.
     file.close();
 }
 

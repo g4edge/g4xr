@@ -27,7 +27,7 @@
 #define G4XRQT_HH
 
 #include "G4VGraphicsSystem.hh"
-
+ 
 class G4XrQt : public G4VGraphicsSystem
 {
   public:

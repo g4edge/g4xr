@@ -36,6 +36,8 @@
 #include "G4VSceneHandler.hh"
 #include "G4XrViewer.hh"
 
+#include "G4UIManager.hh"
+
 #include "G4Polyhedron.hh"
 #include "G4Transform3D.hh"
 #include "G4ThreeVector.hh"
@@ -52,26 +54,29 @@ struct MeshData {
 };
 
 struct TrackData {
-    //std::map<std::string, std::string> atts;
-    //std::string objID;
-    //std::string sourceType;
     std::string trackID;
     std::string particleName;
     std::string step;
     std::string x,y,z;
+    std::string px,py,pz;
+    
+    std::string time;
+    std::string edep;
+    std::string process;
+    
     double charge;
 };
 
 struct HitData {
     std::string x,y,z;
-    std::string edep = "0.0"; // haven't figured out a way to get this info yet... - BEN, 19/06/2025
+    std::string edep = "0.0";
 };
 
 class G4XrSceneHandler : public G4VSceneHandler
 {
   public:
     G4XrSceneHandler(G4VGraphicsSystem& system, const G4String& name);
-    virtual ~G4XrSceneHandler() override = default; // BEN - MARKED VIRTUAL
+    virtual ~G4XrSceneHandler() override; // BEN - MARKED VIRTUAL
 
     ////////////////////////////////////////////////////////////////
     // Required implementation of pure virtual functions...
@@ -83,7 +88,6 @@ class G4XrSceneHandler : public G4VSceneHandler
     void AddPrimitive(const G4Square&) override;
     void AddPrimitive(const G4Polyhedron&) override;
     
-    //BEN
     void CollectTrackData(const G4VTrajectory* traj);
     void CollectHitData(const G4VHit* hit);
     void EndModeling() override;
@@ -103,9 +107,13 @@ class G4XrSceneHandler : public G4VSceneHandler
 
   private:
     friend class G4XrViewer;
-    std::vector<MeshData> collectedMeshes; // BEN
-    std::vector<TrackData> collectedTracks; // BEN
-    std::vector<HitData> collectedHits; // BEN
+    std::vector<MeshData> collectedMeshes;
+    std::vector<TrackData> collectedTracks;
+    std::vector<HitData> collectedHits;
+    std::unordered_set<int> loggedIDs;
+    
+    bool glbState = false;
+    G4int runno = -1;
 
 };
 

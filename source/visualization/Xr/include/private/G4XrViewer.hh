@@ -34,13 +34,11 @@
 #define G4XRVIEWER_HH
 
 
-//#include "tiny_gltf.h"
 #include "httplib.h"
 
 #include "G4VViewer.hh"
 #include "G4XrSceneHandler.hh"
 
-// Ben - 05/27/2025 - Possibly shift includes and method definitions for better organization
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -53,6 +51,7 @@
 #include <thread>
 #include <chrono>
 #include <stdio.h>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -72,17 +71,17 @@ class G4XrViewer : public G4VViewer
   protected:
     httplib::Server svr;
     std::thread svr_thread;
+    std::vector<std::string> pushedFiles;
     
-    // Ben - 05/27/2025
+    
     const std::string UPLOAD_DIR = "./uploads";
     const int PORT = 2535;
     std::string URL;
     bool safe_path(std::string& path) {return path.find("..") == std::string::npos;}
     static std::string get_local_ip();
-    void push_file(const std::string& dirname = "/GLTF"); // modify if renamed later - BEN
+    void push_file(const std::string& dirname = "/GLTF"); 
     int server_init();
     
-    bool file_pushed = false; // check to push files to server - remove later
     
 };
 

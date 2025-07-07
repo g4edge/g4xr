@@ -22,24 +22,11 @@ G4XrViewer::G4XrViewer(G4VSceneHandler& sceneHandler, const G4String& name)
 
 }
 
-void G4XrViewer::Initialise() // server code - Ben (05/27/2025)
+void G4XrViewer::Initialise()
 {
-  std::cout << "G4XrViewer::Initialise()" << std::endl;
-  /*svr.Get("/hi", [](const httplib::Request &, httplib::Response &res) {
-    res.set_content("Hello World!", "text/plain");
-  });
-
-    std::cout<<"Initialized Server"<<std::endl;
-
-  svr_thread = std::thread([this]() {
-    this->svr.listen("0.0.0.0", 8080);  // This blocks inside the thread
-  });*/ // - Stewart's Implementation; "I'm pushing the server launch to an outside method so that this one is cleaner" - Ben 05/27/2025
-    
+    std::cout << "G4XrViewer::Initialise()" << std::endl;
     server_init();
-
 }
-
-
 
 G4XrViewer::~G4XrViewer()
 {
@@ -51,12 +38,15 @@ void G4XrViewer::SetView()
 
 void G4XrViewer::DrawView()
 {
-  NeedKernelVisit();
-
-  ProcessView();
-
-  FinishView();
-        
+    NeedKernelVisit();
+    
+    ProcessView();
+    
+    FinishView();
+    
+    push_file();
+    
+    std::cout<<"End of G4XrViewer::DrawView()"<<std::endl;
 }
 
 void G4XrViewer::ShowView() {
@@ -68,14 +58,8 @@ void G4XrViewer::ClearView()
 
 void G4XrViewer::FinishView()
 {
-    // BEN - casting issues.
-    /*std::cout<<"Pushing mesh data to GLTF..."<<std::endl;
-    auto* xrHandler = dynamic_cast<G4XrSceneHandler*>(fSceneHandler);
-    const auto& meshes = xrHandler->GetCollectedMeshes();
-    ConvertMeshToGLTF(meshes, "trial.gltf");*/
 }
 
-// Ben - 05/27/2025
 int G4XrViewer::server_init() // this is adapted server code that was previously used to test G4VR's web requesting functionality. Some elements are not necessary for a basic local server and can be removed for conciseness. - BEN
 {
     if (fs::exists(UPLOAD_DIR)) { // cleaning code
@@ -96,9 +80,7 @@ int G4XrViewer::server_init() // this is adapted server code that was previously
 
             fs::path file_path = user_path / file.filename;
             std::ofstream ofs(file_path, std::ios::binary);
-            //ofs << file.content; truncating? - BEN 06/02/2025
             ofs.write(file.content.data(), file.content.size());
-            //ofs.close();
         }
 
         res.set_content("Upload Complete", "text/plain");
@@ -163,11 +145,6 @@ int G4XrViewer::server_init() // this is adapted server code that was previously
                 // no resource to clean here
             }
         );
-
-
-
-
-
     });
 
     std::string local_ip = get_local_ip();
@@ -181,17 +158,13 @@ int G4XrViewer::server_init() // this is adapted server code that was previously
 
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
-        std::thread([this]() {while (!file_pushed) {push_file();} }).detach();
-
     return 0;
 }
 
-// Ben - 05/27/2025
 std::string G4XrViewer::get_local_ip()
 {
     std::string local_ip = "127.0.0.1";
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    //if (sock < 0){perror("socket"); return local_ip;}
     
     sockaddr_in serv;
     serv.sin_family = AF_INET;
@@ -223,29 +196,32 @@ std::string G4XrViewer::get_local_ip()
     return local_ip;
 }
 
-// Ben - 05/27/2025
-void G4XrViewer::push_file(const std::string& dirname) { // modify if renamed later - BEN - this is looking for a directory containing gltf meta-data. a good approach would be to create a gltf directory in build which stores all the data.
+void G4XrViewer::push_file(const std::string& dirname)
+{
     httplib::Client cli(URL.c_str());
     
-    try
+    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path().c_str()+dirname))
     {
-        for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path().c_str()+dirname)) {
-            std::cout<<"Pushing from "<<std::filesystem::current_path().c_str()+dirname<<std::endl;
-            if (entry.is_regular_file()) {
-                auto filepath = entry.path();
-                std::ifstream ifs(filepath, std::ios::binary);
-                std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-                
-                httplib::MultipartFormDataItems items = {
-                    { "file", content, filepath.filename().string(), "application/octet-stream" }
-                };
-                auto res = cli.Post(("/upload/testuser"), items); // "testuser" is arbitrary as long as it is consistent with where G4VR looks...
-                if (!res)
-                {std::cerr << "Server Connection Lost\n"; return;}
-                file_pushed = true;
-            }
+        if (entry.is_regular_file() && (std::find(pushedFiles.begin(), pushedFiles.end(), entry.path().filename().string()) == pushedFiles.end()))
+        {
+            std::cout<<"Pushing "<<entry.path().filename().string()<<" from "<<std::filesystem::current_path().c_str()+dirname<<std::endl;
+            auto filepath = entry.path();
+            std::ifstream ifs(filepath, std::ios::binary);
+            std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+            
+            httplib::MultipartFormDataItems items = {
+                { "file", content, filepath.filename().string(), "application/octet-stream" }
+            };
+            auto res = cli.Post(("/upload/testuser"), items); // "testuser" is arbitrary as long as it is consistent with where G4VR looks...
+            if (!res)
+            {std::cerr << "Server Connection Lost\n"; return;}
+            
+            pushedFiles.push_back(entry.path().filename().string());
+            
+            G4UImanager::GetUIpointer()->ApplyCommand("/vis/scene/notifyHandlers");
+            G4UImanager::GetUIpointer()->ApplyCommand("/vis/viewer/update");
         }
-    } catch (...){//std::cout<<"file not found - caught";
+
     }
 }
 

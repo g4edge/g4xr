@@ -71,6 +71,9 @@ public: // With description
   void SetEventID(G4int eventID)
   {fEventID = eventID;}
 
+  G4int GetRunID() const
+  {return fRunID;}
+
   const std::map<G4String,G4AttDef>* GetAttDefs() const;
   std::vector<G4AttValue>* CreateCurrentAttValues() const;
   
