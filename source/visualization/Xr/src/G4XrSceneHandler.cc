@@ -385,12 +385,24 @@ void G4XrSceneHandler::CollectTrackData(const G4VTrajectory* traj)
         td.step = std::to_string(i);
         td.x = std::to_string(pos.x()); td.y = std::to_string(pos.y());td.z = std::to_string(pos.z());
         td.charge = charge;
+
         std::vector<G4AttValue>* attValues = point->CreateAttValues();
         
         if (rich_traj)
         {
-            const G4ThreeVector initMom = rich_traj->GetInitialMomentum(); // from rich
-            td.px = std::to_string(initMom.x()); td.py = std::to_string(initMom.y());td.pz = std::to_string(initMom.z()); // from rich
+            G4RichTrajectory* rich_traj_nc = const_cast<G4RichTrajectory*>(rich_traj);
+
+            const G4ParticleDefinition* pdef = rich_traj_nc->GetParticleDefinition();
+            G4double mass = pdef ? pdef->GetPDGMass() : 0.0;
+
+            const G4ThreeVector initMom = rich_traj_nc->GetInitialMomentum();
+            G4double p = initMom.mag();
+            td.px = std::to_string(initMom.x()/CLHEP::MeV);  // MeV/c
+            td.py = std::to_string(initMom.y()/CLHEP::MeV);
+            td.pz = std::to_string(initMom.z()/CLHEP::MeV);
+            G4double E = std::sqrt(p*p + mass*mass);
+
+            td.energy = std::to_string(E/CLHEP::MeV) + " MeV";
         }
 
         if (attValues)
@@ -398,7 +410,8 @@ void G4XrSceneHandler::CollectTrackData(const G4VTrajectory* traj)
             for (const auto& att : *attValues)
             {
                 if (att.GetName() == "PostT") {
-                    td.time = att.GetValue();
+                    double timeNs = std::stod(att.GetValue()) / CLHEP::ns;
+                    td.time = std::to_string(timeNs) + " ns";
                 } else if (att.GetName() == "TED") { // total energy deposit
                     td.edep = att.GetValue();
                 } else if (att.GetName() == "PDS") { // process defined step
@@ -452,9 +465,9 @@ void G4XrSceneHandler::CollectHitData(const G4VHit* hit)
 void G4XrSceneHandler::WriteToCSV(const std::string& filename, const TrackData td) // called with every traj entry
 {
     std::ofstream file(filename,std::ios::app);
-    file << "track,"<< td.trackID << ","<< td.particleName << "," << td.charge << ","<< td.step << ","<< td.x << ","<< td.y << ","<< td.z << ","<< td.time << ","<< td.edep<< "," << td.process << "," << td.px << ","<< td.py<< "," << td.pz << "\n";
+    file << "track,"<< td.trackID << ","<< td.particleName << "," << td.charge << ","<< td.step << ","<< td.x << ","<< td.y << ","<< td.z << ","<< td.time << ","<< td.edep<< "," << td.process << "," << td.px << ","<< td.py<< "," << td.pz << "," << td.energy << "\n";
     
-    // the order is track, ID, pName, charge, step, x,y,z, time, edep, process, px, py, pz.
+    // the order is track, ID, pName, charge, step, x,y,z, time, edep, process, px, py, pz, energy.
     file.close();
 }
 

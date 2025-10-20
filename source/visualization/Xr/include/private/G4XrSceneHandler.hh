@@ -59,6 +59,8 @@ struct TrackData {
     std::string step;
     std::string x,y,z;
     std::string px,py,pz;
+
+    std::string energy;
     
     std::string time;
     std::string edep;
