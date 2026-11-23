@@ -1,6 +1,11 @@
 #include "G4XrViewer.hh"
 #include "G4VSceneHandler.hh"
-#include "G4XrSceneHandler.hh" //BEN
+#include "G4XrSceneHandler.hh"
+#include "G4Xr.hh"
+
+#include "miniz.h"
+
+#include <algorithm>
 
 // tinygltf
 // Define these only in *one* .cc file.
@@ -13,13 +18,21 @@
 namespace fs = std::filesystem;
 
 G4XrViewer::G4XrViewer(G4VSceneHandler& sceneHandler, const G4String& name)
-  : G4VViewer(sceneHandler, sceneHandler.IncrementViewCount(), name)
+  : G4VViewer(sceneHandler, sceneHandler.IncrementViewCount(), name),
+    fSceneHandler(sceneHandler),
+    fSessionName(G4Xr::GetPendingSessionName())
 {
-    
-  // Set default and current view parameters
-  fVP.SetAutoRefresh(true);
-  fDefaultVP.SetAutoRefresh(true);
+    fVP.SetAutoRefresh(true);
+    fDefaultVP.SetAutoRefresh(true);
 
+    G4cout << "G4XrViewer constructor: name = \"" << name << "\"" << G4endl;  
+    G4cout << "G4XrViewer session name = \"" << fSessionName << "\"" << G4endl;  
+    if (fSessionName != "") {
+        fSessionName.erase(0, fSessionName.find_first_not_of(" \t"));
+        fSessionName.erase(fSessionName.find_last_not_of(" \t") + 1);
+        G4cout << "G4XrViewer: session name set to \"" 
+               << fSessionName << "\". Will save on exit." << G4endl;
+    }
 }
 
 void G4XrViewer::Initialise()
@@ -30,6 +43,16 @@ void G4XrViewer::Initialise()
 
 G4XrViewer::~G4XrViewer()
 {
+    svr.stop();
+    if (!fSessionName.empty()) {      
+        G4cout << "G4XrViewer: packaging session..." << G4endl;
+        SaveSession();
+    }
+    fs::path gltf = fs::current_path() / "GLTF";
+    fs::path uploads = fs::current_path() / "uploads";
+    fs::remove_all(gltf);
+    fs::remove_all(uploads);
+    std::cout << "G4Xr contents deleted." << std::endl;
 }
 
 void G4XrViewer::SetView()
@@ -38,11 +61,18 @@ void G4XrViewer::SetView()
 
 void G4XrViewer::DrawView()
 {
+    auto* xr = dynamic_cast<G4XrSceneHandler*>(&fSceneHandler);
+    if(xr)
+        xr->EnsureRichTrajectories();
+
     NeedKernelVisit();
     
     ProcessView();
     
     FinishView();
+
+    if(xr)
+        xr->FinalizeBinary();
     
     push_file();
     
@@ -164,26 +194,34 @@ int G4XrViewer::server_init() // this is adapted server code that was previously
 std::string G4XrViewer::get_local_ip()
 {
     std::string local_ip = "127.0.0.1";
+#ifdef _WIN32
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock == INVALID_SOCKET) return local_ip;
+    auto closeSocket = [](SOCKET s) { closesocket(s); };
+#else
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    
-    sockaddr_in serv;
+    if (sock < 0) return local_ip;
+    auto closeSocket = [](int s) { close(s); };
+#endif
+
+    sockaddr_in serv{};
     serv.sin_family = AF_INET;
-    serv.sin_addr.s_addr = inet_addr("8.8.8.8");
+    inet_pton(AF_INET, "8.8.8.8", &serv.sin_addr);
     serv.sin_port = htons(53);
 
     int err = connect(sock, (const sockaddr*)&serv, sizeof(serv));
     if (err < 0)
     {
         perror("connect");
-        close(sock);
+        closeSocket(sock);
         return local_ip;
     }
-    sockaddr_in name;
+    sockaddr_in name{};
     socklen_t namelen = sizeof(name);
     err = getsockname(sock, (sockaddr*)&name, &namelen);
     if (err < 0) {
         perror("getsockname");
-        close(sock);
+        closeSocket(sock);
         return local_ip;
     }
     char buffer[INET_ADDRSTRLEN];
@@ -192,19 +230,20 @@ std::string G4XrViewer::get_local_ip()
         local_ip = buffer;
     }
 
-    close(sock);
+    closeSocket(sock);
     return local_ip;
 }
 
 void G4XrViewer::push_file(const std::string& dirname)
 {
     httplib::Client cli(URL.c_str());
+    const fs::path dir = fs::current_path() / dirname;
     
-    for (const auto& entry : std::filesystem::directory_iterator(std::filesystem::current_path().c_str()+dirname))
+    for (const auto& entry : fs::directory_iterator(dir))
     {
         if (entry.is_regular_file() && (std::find(pushedFiles.begin(), pushedFiles.end(), entry.path().filename().string()) == pushedFiles.end()))
         {
-            std::cout<<"Pushing "<<entry.path().filename().string()<<" from "<<std::filesystem::current_path().c_str()+dirname<<std::endl;
+            std::cout<<"Pushing "<<entry.path().filename().string()<<" from "<<dir.string()<<std::endl;
             auto filepath = entry.path();
             std::ifstream ifs(filepath, std::ios::binary);
             std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
@@ -225,6 +264,193 @@ void G4XrViewer::push_file(const std::string& dirname)
     }
 }
 
+void G4XrViewer::SaveSession()
+{
+    if (!fSessionName.empty()) 
+    { 
+        std::vector<fs::path> dirs = { fs::current_path() / "uploads", fs::current_path() / "GLTF" };
+        for (const auto& dir : dirs) {
+            if (!fs::exists(dir)) continue;
+            for (const auto& entry : fs::recursive_directory_iterator(dir)) 
+            {
+                if (entry.path().extension() == ".glb") 
+                {
+                    fs::path newPath = entry.path().parent_path() / (fSessionName + ".glb");
+                    fs::rename(entry.path(), newPath);
+                    break; 
+                }
+            }
+        }
+    }
+    std::string zipName = fSessionName + ".zip";
 
+    if (!ZipDirectory(zipName, fs::path(UPLOAD_DIR))) {
+        G4cerr << "G4XrViewer: zip failed." << G4endl;
+        return;
+    }
 
+    G4cout << "G4XrViewer: session saved to " << zipName << G4endl;
+    WriteLauncherScript(zipName);
+}
+
+bool G4XrViewer::ZipDirectory(const std::string& zipName, const fs::path& srcDir)
+{
+    if (!fs::exists(srcDir)) return false;
+
+    mz_zip_archive zip;
+    mz_zip_zero_struct(&zip);
+    if (!mz_zip_writer_init_file(&zip, zipName.c_str(), 0)) return false;
+
+    bool ok = true;
+    for (const auto& entry : fs::recursive_directory_iterator(srcDir)) {
+        if (!entry.is_regular_file()) continue;
+
+        const std::string archiveName =
+            fs::relative(entry.path(), fs::current_path()).generic_string();
+        if (!mz_zip_writer_add_file(&zip, archiveName.c_str(), entry.path().string().c_str(),
+                                     nullptr, 0, MZ_DEFAULT_COMPRESSION)) {
+            ok = false;
+            break;
+        }
+    }
+
+    ok = ok && mz_zip_writer_finalize_archive(&zip);
+    mz_zip_writer_end(&zip);
+    return ok;
+}
+
+void G4XrViewer::WriteLauncherScript(const std::string& zipName)
+{
+    std::string scriptName = "g4xr_launch.py";
+    std::ofstream f(scriptName);
+    if (!f) {
+        G4cerr << "G4XrViewer: could not write launcher script." << G4endl;
+        return;
+    }
+
+    f << "#!/usr/bin/env python3\n"
+         "\"\"\"\n"
+         "G4Xr Session Replay Server\n\n"
+
+         "Description\n"
+         "-----------\n"
+         "Replays a G4Xr session previously saved by the Geant4 Xr visualization\n"
+         "driver (G4XrViewer). On startup, extracts the given session .zip (if not\n"
+         "already extracted) and runs a small HTTP server exposing the same\n"
+         "download API used by G4XrViewer at simulation time, so a G4VR\n"
+         "client can reconnect and view the saved GLTF/GLB scene without rerunning\n"
+         "the Geant4 simulation.\n\n"
+
+         "Usage\n"
+         "-----\n"
+         "python3 g4xr_launch.py --zip <file_name>.zip\n\n"
+
+         "Requirements\n"
+         "------------\n"
+         "Python 3.6+ standard library only (http.server, zipfile, os, socket, re,\n"
+         "json, argparse, pathlib, shutil) - no third-party packages needed.\n\n"
+
+         "Author\n"
+         "------\n"
+         "Benjamin Jobilal\n"
+         "University of California, Los Angeles (2026)\n\n"
+
+         "Notes\n"
+         "-----\n"
+         "This script is distributed as part of the Geant4 visualization library.\n"
+         "See the Geant4 license for licensing information.\n"
+         "\"\"\"\n\n"
+
+         "import http.server, zipfile, os, socket, re, json, argparse\n"
+         "from pathlib import Path\n\n"
+
+         "PORT = " << PORT << "\n"
+         "UDIR = \"" << UPLOAD_DIR << "\"\n\n"
+
+         "def get_local_ip():\n"
+         "    try:\n"
+         "        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n"
+         "        s.connect((\"8.8.8.8\", 53))\n"
+         "        return s.getsockname()[0]\n"
+         "    except:\n"
+         "        return \"127.0.0.1\"\n\n"
+
+         "class G4XrHandler(http.server.BaseHTTPRequestHandler):\n"
+         "    def log_message(self, fmt, *args):\n"
+         "        pass\n\n"
+
+         "    def do_GET(self):\n"
+         "        m = re.fullmatch(r'/files/(\\w+)/list', self.path)\n"
+         "        if m:\n"
+         "            user_path = os.path.join(UDIR, m.group(1))\n"
+         "            try:\n"
+         "                names = [e for e in os.listdir(user_path)\n"
+         "                         if os.path.isfile(os.path.join(user_path, e))]\n"
+         "            except FileNotFoundError:\n"
+         "                names = []\n"
+         "            body = json.dumps(names).encode()\n"
+         "            self.send_response(200)\n"
+         "            self.send_header('Content-Type', 'application/json')\n"
+         "            self.send_header('Content-Length', str(len(body)))\n"
+         "            self.end_headers()\n"
+         "            self.wfile.write(body)\n"
+         "            return\n\n"
+
+         "        m = re.fullmatch(r'/files/(\\w+)/(.+)', self.path)\n"
+         "        if m:\n"
+         "            file_path = os.path.join(UDIR, m.group(1), m.group(2))\n"
+         "            try:\n"
+         "                file_size = os.path.getsize(file_path)\n"
+         "                self.send_response(200)\n"
+         "                self.send_header('Content-Type', 'application/octet-stream')\n"
+         "                self.send_header('Content-Length', str(file_size))\n"
+         "                self.end_headers()\n"
+         "                with open(file_path, 'rb') as fp:\n"
+         "                    while True:\n"
+         "                        chunk = fp.read(8192)\n"
+         "                        if not chunk: break\n"
+         "                        self.wfile.write(chunk)\n"
+         "            except FileNotFoundError:\n"
+         "                self.send_response(404); self.end_headers()\n"
+         "            return\n\n"
+
+         "        self.send_response(404); self.end_headers()\n\n"
+
+         "if __name__ == \"__main__\":\n"
+         "    import shutil\n"
+         "    parser = argparse.ArgumentParser()\n"
+         "    parser.add_argument(\"--zip\", type=str, required=True,\n"
+         "                        help=\"G4Xr generated .zip file to view.\")\n"
+         "    args = parser.parse_args()\n"
+         "    if not Path(args.zip).is_file():\n"
+         "        print(\"[Error] Specified .zip does not exist. Exiting...\")\n"
+         "    else:\n"
+         "        if not os.path.isdir(UDIR):\n"
+         "            print(f\"Extracting {args.zip} ...\")\n"
+         "            with zipfile.ZipFile(args.zip, 'r') as z:\n"
+         "                z.extractall(\".\")\n"
+         "        ip = get_local_ip()\n"
+         "        httpd = http.server.HTTPServer((\"0.0.0.0\", PORT), G4XrHandler)\n"
+         "        print(f\"G4Xr session server running.\")\n"
+         "        print(f\"Enter this address in G4VR: http://{ip}:{PORT}\")\n"
+         "        print(\"Press Ctrl+C to stop.\")\n"
+         "        try:\n"
+         "            httpd.serve_forever()\n"
+         "        except KeyboardInterrupt:\n"
+         "            pass\n"
+         "        finally:\n"
+         "            httpd.server_close()\n"
+         "            if os.path.isdir(UDIR):\n"
+         "                shutil.rmtree(UDIR)\n"
+         "            print(\"\\nGoodbye ( ;' - `;)\")\n";
+
+    f.close();
+    G4cout << "G4XrViewer: launcher written -> " << scriptName << G4endl;
+#ifdef _WIN32
+    const char* python = "py";
+#else
+    const char* python = "python3";
+#endif
+    G4cout << "  To replay: " << python << " " << scriptName << " --zip " << zipName << G4endl;
+}
 
